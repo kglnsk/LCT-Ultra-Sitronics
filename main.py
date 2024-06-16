@@ -5,7 +5,7 @@ from matching import get_matcher
 from matching import get_matcher, viz2d, available_models
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse,PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
@@ -23,13 +23,73 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-device = 'cpu' # 'cpu'
-matcher = get_matcher('doghardnet-lg', device=device)  # Choose any of our ~20 matchers listed below
+device = 'cpu'
+matcher = get_matcher('doghardnet-lg', device=device)
 img_size = 512
 
-def match_image(image):
-    return 0    
+def load_image(file, resize):
+    # Open the file with rasterio
+    with rasterio.open(file) as src:
+        # Read the first 3 channels
+        img = src.read([1, 2, 3])
+        # Resize image (this is a placeholder, actual resizing needs to be implemented)
+        # For simplicity, we assume the image is already in the required size.
+    return img
+
+@app.post("/image-match", response_class=PlainTextResponse)
+async def image_match(img0_file: UploadFile = File(...), img1_file: UploadFile = File(...)):
+    # Load images
+    img0 = load_image(img0_file.file, resize=img_size)
+    img1 = load_image(img1_file.file, resize=img_size * 6)
+    
+    # Perform image matching
+    result = matcher(img0, img1)
+    num_inliers, H, mkpts0, mkpts1 = result['num_inliers'], result['H'], result['mkpts0'], result['mkpts1']
+    
+    # Get coordinates of the four corners
+    def get_corner_coordinates(img, H, crs):
+        # Get image dimensions
+        h, w = img.shape[1:]
+        corners = np.array([
+            [0, 0],        # Top-left
+            [w, 0],        # Top-right
+            [w, h],        # Bottom-right
+            [0, h]         # Bottom-left
+        ])
+        # Apply homography
+        corners_transformed = cv2.perspectiveTransform(np.float32([corners]), H)[0]
+        
+        # Convert pixel coordinates to world coordinates using gdal
+        src_ds = gdal.Open(img0_file.file.name)
+        src_proj = src_ds.GetProjection()
+        src_geotrans = src_ds.GetGeoTransform()
+        
+        dst_proj = crs.ExportToWkt()
+        dst_geotrans = src_geotrans
+        
+        transform = gdal.Transformer(src_ds, None, [])
+        
+        world_coords = []
+        for corner in corners_transformed:
+            px, py = corner
+            success, (world_x, world_y, _) = transform.TransformPoint(False, px, py)
+            if success:
+                world_coords.append((world_x, world_y))
+        
+        return world_coords
+    
+    # Get EPSG:32637 CRS
+    crs = gdal.osr.SpatialReference()
+    crs.ImportFromEPSG(32637)
+    
+    # Transform coordinates
+    corner_coords = get_corner_coordinates(img0, H, crs)
+    
+    # Format string output
+    formatted_coords = "\n".join([f"{x:.3f};{y:.3f}" for x, y in corner_coords])
+    
+    return formatted_coords
+
 
 def adaptive_thresholds(image, underexposed_factor=0.15, overexposed_factor=5.0):
     """
