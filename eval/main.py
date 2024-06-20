@@ -28,7 +28,7 @@ def get_matching_keypoints(kp1, kp2, idxs):
     mkpts2 = kp2[idxs[:, 1]].detach().numpy()
     return mkpts1, mkpts2
 
-def save_coords_to_csv(data, filename='coords.csv'):
+def save_coords_to_csv(data, filename='./results/coords.csv'):
     df = pd.DataFrame(data)
     df.to_csv(filename, index=False)
 
